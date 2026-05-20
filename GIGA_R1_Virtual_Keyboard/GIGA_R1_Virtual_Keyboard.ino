@@ -17,6 +17,7 @@ const char* password = "VOTRE_MOT_DE_PASSE";
 #define MOD_NONE    0x00
 #define MOD_SHIFT   0x02
 #define MOD_ALTGR   0x40
+#define MOD_CTRL    0x01
 
 #define HID_KEY_UP_ARROW    0x52
 #define HID_KEY_DOWN_ARROW  0x51
@@ -38,6 +39,7 @@ Arduino_H7_Video         Display(800, 480, GigaDisplayShield);
 Arduino_GigaDisplayTouch touchDetector;
 
 bool          azertyMode    = true;   // true = AZERTY FR, false = QWERTY EN
+String        cachedIP;
 unsigned long lastTouchTime = 0;
 const unsigned long TOUCH_THRESHOLD = 300; // ms anti-rebond
 
@@ -66,16 +68,17 @@ struct KeyMapping {
 
 const KeyMapping azertyMap[] = {
   // Chiffres et symboles (rangee du haut)
-  {'&', 0x1E, MOD_NONE},   {'1', 0x1E, MOD_SHIFT},  {'{', 0x1E, MOD_ALTGR},
-  {'2', 0x1F, MOD_SHIFT},  {'~', 0x1F, MOD_ALTGR},
-  {'3', 0x20, MOD_SHIFT},  {'#', 0x20, MOD_ALTGR},
-  {'4', 0x21, MOD_SHIFT},
-  {'5', 0x22, MOD_SHIFT},  {'[', 0x22, MOD_ALTGR},
-  {'6', 0x23, MOD_SHIFT},  {'|', 0x23, MOD_ALTGR},
-  {'7', 0x24, MOD_SHIFT},  {'`', 0x24, MOD_ALTGR},
-  {'8', 0x25, MOD_SHIFT},  {'\\',0x25, MOD_ALTGR},
-  {'9', 0x26, MOD_SHIFT},  {'^', 0x26, MOD_ALTGR},
-  {'0', 0x27, MOD_SHIFT},  {'@', 0x27, MOD_ALTGR},
+  // Positions physiques AZERTY FR : &/1  é/2/~  "/3/#  '/4/{  (/5/[  -/6/|  è/7/`  _/8/\  ç/9/^  à/0/@
+  {'&',        0x1E, MOD_NONE},  {'1',        0x1E, MOD_SHIFT},
+  {(char)0xE9, 0x1F, MOD_NONE},  {'2',        0x1F, MOD_SHIFT},  {'~', 0x1F, MOD_ALTGR},
+  {'3',        0x20, MOD_SHIFT},  {'#',        0x20, MOD_ALTGR},
+  {'4',        0x21, MOD_SHIFT},  {'{',        0x21, MOD_ALTGR},
+  {'5',        0x22, MOD_SHIFT},  {'[',        0x22, MOD_ALTGR},
+  {'-',        0x23, MOD_NONE},   {'6',        0x23, MOD_SHIFT},  {'|', 0x23, MOD_ALTGR},
+  {(char)0xE8, 0x24, MOD_NONE},  {'7',        0x24, MOD_SHIFT},  {'`', 0x24, MOD_ALTGR},
+  {'_',        0x25, MOD_NONE},   {'8',        0x25, MOD_SHIFT},  {'\\',0x25, MOD_ALTGR},
+  {(char)0xE7, 0x26, MOD_NONE},  {'9',        0x26, MOD_SHIFT},  {'^', 0x26, MOD_ALTGR},
+  {(char)0xE0, 0x27, MOD_NONE},  {'0',        0x27, MOD_SHIFT},  {'@', 0x27, MOD_ALTGR},
 
   // Rangee AZERTY
   {'a', 0x14, MOD_NONE},  {'A', 0x14, MOD_SHIFT},
@@ -118,16 +121,15 @@ const KeyMapping azertyMap[] = {
   {'!', 0x38, MOD_SHIFT},
   {'?', 0x38, MOD_NONE},
   {'/', 0x37, MOD_NONE},
-  {'-', 0x2D, MOD_NONE},
-  {'_', 0x2D, MOD_SHIFT},
-  {'=', 0x2E, MOD_NONE},
-  {'+', 0x2E, MOD_SHIFT},
-  {'(', 0x22, MOD_NONE},
-  {')', 0x26, MOD_NONE},
-  {'\'',0x34, MOD_NONE},
-  {'"', 0x34, MOD_SHIFT},
-  {'<', 0x64, MOD_NONE},
-  {'>', 0x64, MOD_SHIFT},
+  {'=',        0x2E, MOD_NONE},
+  {'+',        0x2E, MOD_SHIFT},
+  {'(',        0x22, MOD_NONE},
+  {')',        0x2D, MOD_NONE},         // ) : touche - QWERTY = ) sur AZERTY FR
+  {'\'',       0x21, MOD_NONE},         // ' : touche 4 sur AZERTY FR
+  {'"',        0x20, MOD_NONE},         // " : touche 3 sur AZERTY FR (sans modif)
+  {(char)0xF9, 0x34, MOD_NONE},         // u avec accent grave : touche apostrophe QWERTY
+  {'<',        0x64, MOD_NONE},
+  {'>',        0x64, MOD_SHIFT},
 };
 const int AZERTY_MAP_SIZE = sizeof(azertyMap) / sizeof(azertyMap[0]);
 
@@ -147,12 +149,23 @@ void sendChar(char c) {
 }
 
 void sendString(String str) {
-  for (int i = 0; i < str.length(); i++) {
+  for (int i = 0; i < (int)str.length(); ) {
+    uint8_t b = (uint8_t)str.charAt(i);
     if (azertyMode) {
-      sendChar(str.charAt(i));
+      // Convertit les sequences UTF-8 sur 2 octets (Latin-1 etendu U+00C0..U+00FF)
+      // en leur valeur Latin-1 pour la recherche dans azertyMap.
+      if ((b == 0xC2 || b == 0xC3) && i + 1 < (int)str.length()) {
+        uint8_t b2 = (uint8_t)str.charAt(i + 1);
+        sendChar((char)((b == 0xC3 ? 0xC0 : 0x80) | (b2 & 0x3F)));
+        i += 2;
+      } else {
+        sendChar((char)b);
+        i++;
+      }
     } else {
-      Keyboard.putc(str.charAt(i));
+      Keyboard.putc((char)b);
       delay(10);
+      i++;
     }
   }
 }
@@ -237,6 +250,15 @@ void drawScreen(String ip) {
   Display.endDraw();
 }
 
+void setMode(bool azerty, const char* source) {
+  if (azertyMode == azerty) return;
+  azertyMode = azerty;
+  drawScreen(cachedIP);
+  Serial.print(azerty ? "-> AZERTY (" : "-> QWERTY (");
+  Serial.print(source);
+  Serial.println(")");
+}
+
 // ================================================================
 //  SETUP
 // ================================================================
@@ -259,11 +281,27 @@ void setup() {
   Serial.print("Connexion a : ");
   Serial.println(ssid);
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  {
+    unsigned long wifiStart = millis();
+    while (WiFi.status() != WL_CONNECTED) {
+      if (millis() - wifiStart > 30000) {
+        Display.beginDraw();
+        Display.background(0, 0, 0); Display.clear();
+        Display.stroke(255, 60, 60); Display.textFont(Font_5x7); Display.textSize(2);
+        Display.text("WiFi : connexion impossible", 40, 190);
+        Display.text("Verifiez SSID/mot de passe", 40, 230);
+        Display.endDraw();
+        Serial.println("\nErreur : WiFi non disponible");
+        while (true) { delay(1000); }
+      }
+      delay(500);
+      Serial.print(".");
+    }
+  }
 
-  String ip = WiFi.localIP().toString();
-  Serial.println("\nIP : " + ip);
-  drawScreen(ip);
+  cachedIP = WiFi.localIP().toString();
+  Serial.println("\nIP : " + cachedIP);
+  drawScreen(cachedIP);
   server.begin();
 }
 
@@ -284,11 +322,11 @@ void loop() {
 
     if (tx >= BTN_AZERTY_X && tx <= BTN_AZERTY_X + BTN_AZERTY_W &&
         ty >= BTN_AZERTY_Y && ty <= BTN_AZERTY_Y + BTN_AZERTY_H) {
-      if (!azertyMode) { azertyMode = true;  drawScreen(WiFi.localIP().toString()); Serial.println("-> AZERTY (touch)"); }
+      setMode(true, "touch");
     }
     if (tx >= BTN_QWERTY_X && tx <= BTN_QWERTY_X + BTN_QWERTY_W &&
         ty >= BTN_QWERTY_Y && ty <= BTN_QWERTY_Y + BTN_QWERTY_H) {
-      if (azertyMode)  { azertyMode = false; drawScreen(WiFi.localIP().toString()); Serial.println("-> QWERTY (touch)"); }
+      setMode(false, "touch");
     }
   }
 
@@ -312,6 +350,7 @@ void loop() {
         if (requestLine.startsWith("GET /text?val=")) {
           int start = requestLine.indexOf("val=") + 4;
           int end   = requestLine.indexOf(" HTTP");
+          if (end < 0) end = requestLine.length();
           sendString(urldecode(requestLine.substring(start, end)));
         } else if (requestLine.startsWith("GET /key?val=ENTER"))    { Keyboard.key_code(HID_KEY_ENTER, MOD_NONE); }
         else if (requestLine.startsWith("GET /key?val=TAB"))       { Keyboard.key_code(HID_KEY_TAB, MOD_NONE); }
@@ -322,13 +361,13 @@ void loop() {
         else if (requestLine.startsWith("GET /key?val=DOWN"))       { Keyboard.key_code(HID_KEY_DOWN_ARROW, MOD_NONE); }
         else if (requestLine.startsWith("GET /key?val=LEFT"))       { Keyboard.key_code(HID_KEY_LEFT_ARROW, MOD_NONE); }
         else if (requestLine.startsWith("GET /key?val=RIGHT"))      { Keyboard.key_code(HID_KEY_RIGHT_ARROW, MOD_NONE); }
-        else if (requestLine.startsWith("GET /key?val=CTRLC"))      { Keyboard.key_code(0x06, 0x01); }
-        else if (requestLine.startsWith("GET /key?val=CTRLZ"))      { Keyboard.key_code(0x1D, 0x01); }
-        else if (requestLine.startsWith("GET /key?val=CTRLD"))      { Keyboard.key_code(0x07, 0x01); }
+        else if (requestLine.startsWith("GET /key?val=CTRLC"))      { Keyboard.key_code(0x06, MOD_CTRL); }
+        else if (requestLine.startsWith("GET /key?val=CTRLZ"))      { Keyboard.key_code(0x1D, MOD_CTRL); }
+        else if (requestLine.startsWith("GET /key?val=CTRLD"))      { Keyboard.key_code(0x07, MOD_CTRL); }
         else if (requestLine.startsWith("GET /mode?val=azerty")) {
-          if (!azertyMode) { azertyMode = true;  drawScreen(WiFi.localIP().toString()); Serial.println("-> AZERTY (web)"); }
+          setMode(true, "web");
         } else if (requestLine.startsWith("GET /mode?val=qwerty")) {
-          if (azertyMode)  { azertyMode = false; drawScreen(WiFi.localIP().toString()); Serial.println("-> QWERTY (web)"); }
+          setMode(false, "web");
         }
 
         String modeStr = azertyMode ? "AZERTY FR" : "QWERTY EN";
@@ -368,7 +407,7 @@ void loop() {
         client.print("<button class='"); client.print(clAZ.c_str()); client.print("' onclick='setMode(\"azerty\")'>AZERTY</button>");
         client.print("<button class='"); client.print(clQW.c_str()); client.print("' onclick='setMode(\"qwerty\")'>QWERTY</button>");
         client.print("<hr>");
-        client.print("<input type='text' id='txt' placeholder='Tapez votre texte ici...' autofocus>");
+        client.print("<input type='text' id='txt' placeholder='Tapez votre texte ici...' maxlength='512' autofocus>");
         client.print("<button class='btn-send' onclick='sendText()'>&#9654; Envoyer</button>");
         client.print("<hr>");
         client.print("<div class='lbl'>Touches systeme</div>");
@@ -402,7 +441,7 @@ void loop() {
       }
       currentLine = "";
     } else if (c != '\r') {
-      currentLine += c;
+      if (currentLine.length() < 512) currentLine += c;
     }
   }
   delay(5);
